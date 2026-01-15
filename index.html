@@ -207,23 +207,27 @@
 
     /* Floating Transfer button (bottom-right) */
     .fab{
-      position:fixed;
-      right:18px;
-      bottom:18px;
-      z-index:50;
+      position: sticky;
+      bottom: 0;
+      z-index: 5;
       display:flex;
       align-items:center;
+      justify-content:flex-end;
       gap:10px;
+      padding: 10px;
+      background: rgba(255,255,255,.92);
+      border-top: 1px solid var(--line);
+      backdrop-filter: blur(6px);
     }
     .fab .selInfo{
       background:#fff;
       border:1px solid var(--line);
       border-radius:12px;
-      padding:10px 12px;
-      box-shadow: var(--shadow);
+      padding:8px 10px;
+      box-shadow: none;
       color: var(--muted);
       font-size:12px;
-      max-width: 52vw;
+      max-width: 40vw;
       overflow:hidden;
       text-overflow:ellipsis;
       white-space:nowrap;
@@ -367,18 +371,20 @@
         </thead>
         <tbody id="tbody"></tbody>
       </table>
+
+      <!-- Transfer bar (sticky to bottom of the table container) -->
+      <div class="fab" aria-label="Transfer actions">
+        <div class="muted" style="font-weight:800;">Select an order row, then click Transfer to…</div>
+        <div class="selInfo" id="selInfo">No order selected</div>
+        <button class="fabBtn" id="btnTransfer" type="button" disabled>Transfer to…</button>
+      </div>
+
     </div>
 
     <div class="footer">
       <div id="meta">0 orders</div>
       <div class="muted">Tip: click a row to select it. Then use “Transfer to…” at bottom-right.</div>
     </div>
-  </div>
-
-  <!-- Floating Action Button -->
-  <div class="fab" aria-label="Transfer actions">
-    <div class="selInfo" id="selInfo">No order selected</div>
-    <button class="fabBtn" id="btnTransfer" type="button" disabled>Transfer to…</button>
   </div>
 
   <!-- Modal -->
