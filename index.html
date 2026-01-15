@@ -1,11 +1,14 @@
 <!doctype html>
-<!-- index.html
-     Host this file on GitHub Pages (HTTPS).
-     Works with Wix postMessage bridge:
-       - Sends: { type:"GET_ORDERS", payload:{tab,q,limit,offset} }
-       - Receives: { type:"ORDERS_RESULT", items: [...] } or { type:"ERROR", message:"..." }
-       - Sends updates: { type:"SET_URGENCY", id, value, payload:{...state} }
-       - Sends transfers: { type:"TRANSFER_ORDER", id, toSite, note, payload:{...state} }
+<!--
+  Fast Med Orders Dashboard (GitHub Pages)
+  UI: tabs + search + urgency dropdown + row selection + Transfer modal
+  Wix postMessage bridge contract:
+    OUT -> { type:"GET_ORDERS", payload:{tab,q,limit,offset} }
+    OUT -> { type:"SET_URGENCY", id, value, payload:{...state} }
+    OUT -> { type:"TRANSFER_ORDER", id, toSite, note, payload:{...state} }
+
+    IN  <- { type:"ORDERS_RESULT", items:[...] }
+    IN  <- { type:"ERROR", message:"..." }
 -->
 <html lang="en">
 <head>
@@ -23,10 +26,11 @@
       --chipBg:#f3f4f6;
       --focus:#2563eb;
       --danger:#b91c1c;
+      --shadow: 0 10px 25px rgba(0,0,0,.12);
     }
     body{
       margin:0;
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji","Segoe UI Emoji";
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans";
       background:var(--bg);
       color:var(--text);
     }
@@ -89,9 +93,6 @@
       border-radius:10px;
       cursor:pointer;
       font-weight:800;
-      display:inline-flex;
-      align-items:center;
-      gap:8px;
     }
     .btn:hover{ border-color:#cbd5e1; }
 
@@ -99,10 +100,10 @@
     .tableWrap{
       border:1px solid var(--line);
       border-radius:14px;
-      overflow:auto;           /* allow horizontal scroll */
+      overflow:auto;
     }
     table{
-      min-width: 1700px;       /* ensures all columns exist */
+      min-width: 1500px; /* increase if you want more room */
       width:100%;
       border-collapse:separate;
       border-spacing:0;
@@ -130,13 +131,17 @@
       overflow:hidden;
       text-overflow:ellipsis;
     }
-    tbody tr:hover{ background:#fafafa; }
+    tbody tr:hover{ background:#fafafa; cursor:pointer; }
+    tbody tr.selected{
+      background: rgba(37,99,235,.06);
+      outline: 2px solid rgba(37,99,235,.18);
+      outline-offset: -2px;
+    }
 
     /* Chips / badges */
     .chip{
       display:inline-flex;
       align-items:center;
-      gap:6px;
       padding:6px 10px;
       border-radius:999px;
       background:var(--chipBg);
@@ -173,20 +178,7 @@
       box-shadow:0 0 0 3px rgba(37,99,235,.15);
     }
 
-    /* Transfer button */
-    .xferBtn{
-      border:1px solid var(--line);
-      background:#fff;
-      padding:8px 10px;
-      border-radius:10px;
-      cursor:pointer;
-      font-weight:900;
-      width: 140px;
-      text-align:center;
-    }
-    .xferBtn:hover{ border-color:#cbd5e1; }
-
-    /* Footer/paging */
+    /* Footer */
     .footer{
       display:flex;
       align-items:center;
@@ -200,10 +192,10 @@
     .loading{ opacity:.65; pointer-events:none; }
     .muted{ color:var(--muted); }
 
-    /* Column widths */
+    /* Column widths (stretch here) */
     colgroup col.cUrg{ width:150px; }
     colgroup col.cOrder{ width:150px; }
-    colgroup col.cCust{ width:180px; }
+    colgroup col.cCust{ width:200px; }
     colgroup col.cPre{ width:140px; }
     colgroup col.cPhone{ width:140px; }
     colgroup col.cPay{ width:120px; }
@@ -212,11 +204,127 @@
     colgroup col.cRecv{ width:150px; }
     colgroup col.cStatus{ width:160px; }
     colgroup col.cPickup{ width:150px; }
-    colgroup col.cHandle{ width:110px; }
-    colgroup col.cXfer{ width:160px; }
 
-    @media (max-width: 900px){
-      .wrap{ padding:14px; }
+    /* Floating Transfer button (bottom-right) */
+    .fab{
+      position:fixed;
+      right:18px;
+      bottom:18px;
+      z-index:50;
+      display:flex;
+      align-items:center;
+      gap:10px;
+    }
+    .fab .selInfo{
+      background:#fff;
+      border:1px solid var(--line);
+      border-radius:12px;
+      padding:10px 12px;
+      box-shadow: var(--shadow);
+      color: var(--muted);
+      font-size:12px;
+      max-width: 52vw;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+    }
+    .fabBtn{
+      border:1px solid #111;
+      background:#111;
+      color:#fff;
+      padding:12px 14px;
+      border-radius:14px;
+      cursor:pointer;
+      font-weight:900;
+      box-shadow: var(--shadow);
+      min-width: 140px;
+    }
+    .fabBtn:disabled{
+      opacity:.45;
+      cursor:not-allowed;
+      box-shadow:none;
+      border-color: var(--line);
+      background:#fff;
+      color:#111;
+    }
+
+    /* Modal */
+    .modalOverlay{
+      position:fixed;
+      inset:0;
+      background: rgba(0,0,0,.38);
+      z-index:60;
+      display:none;
+      align-items:center;
+      justify-content:center;
+      padding:16px;
+    }
+    .modalOverlay.open{ display:flex; }
+    .modal{
+      width:min(560px, 92vw);
+      background:#fff;
+      border:1px solid var(--line);
+      border-radius:16px;
+      box-shadow: var(--shadow);
+      overflow:hidden;
+    }
+    .modalHeader{
+      padding:14px 16px;
+      border-bottom:1px solid var(--line);
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      background:#fff;
+    }
+    .modalTitle{ font-weight:1000; font-size:14px; }
+    .modalClose{
+      border:1px solid var(--line);
+      background:#fff;
+      border-radius:10px;
+      padding:8px 10px;
+      cursor:pointer;
+      font-weight:900;
+    }
+    .modalBody{ padding:14px 16px; }
+    .field{ display:flex; flex-direction:column; gap:6px; margin-bottom:12px; }
+    .label{ font-size:12px; color: var(--muted); font-weight:800; }
+    .select, .textarea{
+      border:1px solid var(--line);
+      border-radius:12px;
+      padding:10px 12px;
+      outline:none;
+      font-size:13px;
+    }
+    .select:focus, .textarea:focus{
+      border-color:var(--focus);
+      box-shadow:0 0 0 3px rgba(37,99,235,.15);
+    }
+    .textarea{ min-height:90px; resize:vertical; }
+    .modalFooter{
+      padding:14px 16px;
+      border-top:1px solid var(--line);
+      display:flex;
+      justify-content:flex-end;
+      gap:10px;
+      background:#fff;
+    }
+    .btnGhost{
+      border:1px solid var(--line);
+      background:#fff;
+      padding:10px 12px;
+      border-radius:12px;
+      cursor:pointer;
+      font-weight:900;
+    }
+    .btnPrimary{
+      border:1px solid #111;
+      background:#111;
+      color:#fff;
+      padding:10px 12px;
+      border-radius:12px;
+      cursor:pointer;
+      font-weight:900;
     }
   </style>
 </head>
@@ -240,7 +348,7 @@
       <table>
         <colgroup>
           <col class="cUrg"><col class="cOrder"><col class="cCust"><col class="cPre"><col class="cPhone">
-          <col class="cPay"><col class="cCreated"><col class="cTotal"><col class="cRecv"><col class="cStatus"><col class="cPickup"><col class="cHandle"><col class="cXfer">
+          <col class="cPay"><col class="cCreated"><col class="cTotal"><col class="cRecv"><col class="cStatus"><col class="cPickup">
         </colgroup>
         <thead>
           <tr>
@@ -255,8 +363,6 @@
             <th>Receive Method</th>
             <th>Order Status</th>
             <th>Pick Up Location</th>
-            <th>Handling</th>
-            <th>Transfer</th>
           </tr>
         </thead>
         <tbody id="tbody"></tbody>
@@ -265,44 +371,128 @@
 
     <div class="footer">
       <div id="meta">0 orders</div>
-      <div class="muted" id="hint">Tip: use the urgency dropdown; transfer moves handling between TST/Central.</div>
+      <div class="muted">Tip: click a row to select it. Then use “Transfer to…” at bottom-right.</div>
+    </div>
+  </div>
+
+  <!-- Floating Action Button -->
+  <div class="fab" aria-label="Transfer actions">
+    <div class="selInfo" id="selInfo">No order selected</div>
+    <button class="fabBtn" id="btnTransfer" type="button" disabled>Transfer to…</button>
+  </div>
+
+  <!-- Modal -->
+  <div class="modalOverlay" id="modalOverlay" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="modal">
+      <div class="modalHeader">
+        <div class="modalTitle" id="modalTitle">Transfer Order</div>
+        <button class="modalClose" id="modalClose" type="button">✕</button>
+      </div>
+      <div class="modalBody">
+        <div class="field">
+          <div class="label">Order</div>
+          <div id="modalOrderInfo" style="font-weight:1000;"></div>
+        </div>
+
+        <div class="field">
+          <div class="label">Transfer to</div>
+          <select class="select" id="toSiteSelect">
+            <option value="TST">TST</option>
+            <option value="CENTRAL">CENTRAL</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <div class="label">Notes (optional)</div>
+          <textarea class="textarea" id="transferNote"
+            placeholder="e.g. TST out of stock, move to Central for fulfillment"></textarea>
+        </div>
+      </div>
+      <div class="modalFooter">
+        <button class="btnGhost" id="modalCancel" type="button">Cancel</button>
+        <button class="btnPrimary" id="modalConfirm" type="button">Confirm Transfer</button>
+      </div>
     </div>
   </div>
 
   <script>
     // -------- State --------
-    const state = {
-      tab: "TST",
-      q: "",
-      limit: 50,
-      offset: 0
-    };
+    const state = { tab: "TST", q: "", limit: 50, offset: 0 };
+    // Selected order
+    const selection = { id: "", orderNumber: "", customerName: "", handlingSite: "" };
 
     const tbody = document.getElementById("tbody");
     const tableWrap = document.getElementById("tableWrap");
     const meta = document.getElementById("meta");
     const search = document.getElementById("search");
 
-    function setLoading(on){
-      tableWrap.classList.toggle("loading", !!on);
-    }
+    const selInfo = document.getElementById("selInfo");
+    const btnTransfer = document.getElementById("btnTransfer");
 
-    function post(msg){
-      window.parent.postMessage(msg, "*");
-    }
+    const modalOverlay = document.getElementById("modalOverlay");
+    const modalClose = document.getElementById("modalClose");
+    const modalCancel = document.getElementById("modalCancel");
+    const modalConfirm = document.getElementById("modalConfirm");
+    const modalOrderInfo = document.getElementById("modalOrderInfo");
+    const toSiteSelect = document.getElementById("toSiteSelect");
+    const transferNote = document.getElementById("transferNote");
+
+    function setLoading(on){ tableWrap.classList.toggle("loading", !!on); }
+    function post(msg){ window.parent.postMessage(msg, "*"); }
 
     function requestOrders(){
       setLoading(true);
       post({ type:"GET_ORDERS", payload: { ...state } });
     }
 
-    // -------- UI handlers --------
+    function clearSelection(){
+      selection.id = ""; selection.orderNumber = ""; selection.customerName = ""; selection.handlingSite = "";
+      updateSelectionUI();
+      tbody.querySelectorAll("tr.selected").forEach(tr => tr.classList.remove("selected"));
+    }
+
+    function updateSelectionUI(){
+      if(!selection.id){
+        selInfo.textContent = "No order selected";
+        btnTransfer.disabled = true;
+        return;
+      }
+      selInfo.textContent =
+        `Selected: #${selection.orderNumber || selection.id}${selection.customerName ? " · " + selection.customerName : ""}`;
+      btnTransfer.disabled = false;
+    }
+
+    function openModal(){
+      if(!selection.id) return;
+
+      modalOrderInfo.textContent =
+        `#${selection.orderNumber || selection.id}${selection.customerName ? " · " + selection.customerName : ""}`;
+
+      // Suggest opposite of current site when known, else opposite of tab
+      const cur = String(selection.handlingSite || "").toUpperCase();
+      const tab = String(state.tab || "").toUpperCase();
+      let suggested = "CENTRAL";
+      if(cur === "TST") suggested = "CENTRAL";
+      else if(cur === "CENTRAL") suggested = "TST";
+      else if(tab === "TST") suggested = "CENTRAL";
+      else if(tab === "CENTRAL") suggested = "TST";
+
+      toSiteSelect.value = suggested;
+      transferNote.value = "";
+      modalOverlay.classList.add("open");
+      transferNote.focus();
+    }
+
+    function closeModal(){ modalOverlay.classList.remove("open"); }
+
+    // Tabs
     document.querySelectorAll(".tab").forEach(el => {
       el.addEventListener("click", () => {
         document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
         el.classList.add("active");
         state.tab = el.dataset.tab;
         state.offset = 0;
+        clearSelection();
         requestOrders();
       });
     });
@@ -314,38 +504,40 @@
       timer = setTimeout(() => {
         state.q = e.target.value || "";
         state.offset = 0;
+        clearSelection();
         requestOrders();
       }, 250);
     });
 
-    document.getElementById("refresh").addEventListener("click", () => requestOrders());
+    document.getElementById("refresh").addEventListener("click", () => {
+      clearSelection();
+      requestOrders();
+    });
+
+    btnTransfer.addEventListener("click", openModal);
+    modalClose.addEventListener("click", closeModal);
+    modalCancel.addEventListener("click", closeModal);
+    modalOverlay.addEventListener("click", (e) => { if(e.target === modalOverlay) closeModal(); });
+    window.addEventListener("keydown", (e) => { if(e.key === "Escape") closeModal(); });
+
+    modalConfirm.addEventListener("click", () => {
+      if(!selection.id) return;
+      const toSite = String(toSiteSelect.value || "").toUpperCase();
+      const note = String(transferNote.value || "").trim();
+
+      post({ type: "TRANSFER_ORDER", id: selection.id, toSite, note, payload: { ...state } });
+
+      closeModal();
+      clearSelection();
+    });
 
     // -------- Formatting --------
     function escapeHtml(s){
-      return String(s ?? "").replace(/[&<>"']/g, m => ({
-        "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
-      }[m]));
+      return String(s ?? "").replace(/[&<>"']/g, m => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]));
     }
-
-    function fmtDate(d){
-      if(!d) return "";
-      try{
-        const dt = new Date(d);
-        return dt.toLocaleString();
-      }catch(_){ return String(d); }
-    }
-
-    function fmtTotal(x){
-      if(x === null || x === undefined || x === "") return "";
-      const n = Number(x);
-      if(Number.isNaN(n)) return String(x);
-      return n.toFixed(2);
-    }
-
-    function chip(text){
-      return `<span class="chip">${escapeHtml(text || "")}</span>`;
-    }
-
+    function fmtDate(d){ try{ return d ? new Date(d).toLocaleString() : ""; }catch(_){ return String(d||""); } }
+    function fmtTotal(x){ const n = Number(x); return Number.isFinite(n) ? n.toFixed(2) : (x ?? ""); }
+    function chip(text){ return `<span class="chip">${escapeHtml(text || "")}</span>`; }
     function paymentBadge(paymentStatus){
       const s = String(paymentStatus || "").toUpperCase();
       if (s === "PAID") return `<span class="badge green">PAID</span>`;
@@ -353,12 +545,11 @@
       if (s.includes("REFUND")) return `<span class="badge gray">${escapeHtml(s)}</span>`;
       return `<span class="badge gray">${escapeHtml(s || "-")}</span>`;
     }
-
     function urgencySelect(order){
       const current = String(order.urgencyFinal || "NORMAL").toUpperCase();
       const id = order._id;
       return `
-        <select class="urgSel" data-id="${escapeHtml(id)}">
+        <select class="urgSel" data-id="${escapeHtml(id)}" aria-label="Urgency">
           <option value="ASAP" ${current==="ASAP" ? "selected":""}>ASAP</option>
           <option value="TODAY" ${current==="TODAY" ? "selected":""}>TODAY</option>
           <option value="NORMAL" ${current==="NORMAL" ? "selected":""}>NORMAL</option>
@@ -366,22 +557,20 @@
       `;
     }
 
-    function transferBtn(order){
-      const cur = String(order.handlingSite || "TST").toUpperCase();
-      const toSite = (cur === "CENTRAL") ? "TST" : "CENTRAL";
-      const label = (cur === "CENTRAL") ? "→ TST" : "→ Central";
-      return `<button class="xferBtn" data-id="${escapeHtml(order._id)}" data-to="${escapeHtml(toSite)}">${label}</button>`;
-    }
-
     // -------- Render --------
     function renderRows(items){
       tbody.innerHTML = (items || []).map(o => {
+        // NOTE: handlingSite is stored in dataset only (hidden column)
         const handling = String(o.handlingSite || "");
+        const customer = o.customerName || "";
         return `
-          <tr>
+          <tr data-id="${escapeHtml(o._id)}"
+              data-order="${escapeHtml(o.orderNumber || "")}"
+              data-customer="${escapeHtml(customer)}"
+              data-handling="${escapeHtml(handling)}">
             <td>${urgencySelect(o)}</td>
             <td title="${escapeHtml(o.orderNumber)}">${chip(o.orderNumber)}</td>
-            <td title="${escapeHtml(o.customerName)}">${escapeHtml(o.customerName || "")}</td>
+            <td title="${escapeHtml(customer)}">${escapeHtml(customer)}</td>
             <td>${escapeHtml(o.preConsultStatus || "")}</td>
             <td>${escapeHtml(o.phoneDigits || o.phoneNorm || "")}</td>
             <td>${paymentBadge(o.paymentStatus)}</td>
@@ -390,43 +579,31 @@
             <td>${escapeHtml(o.fulfillmentType || "")}</td>
             <td>${escapeHtml(o.orderStatusFinal || "")}</td>
             <td>${escapeHtml(o.pickupLocation || "")}</td>
-            <td>${chip(handling)}</td>
-            <td>${transferBtn(o)}</td>
           </tr>
         `;
       }).join("");
 
-      // Urgency change
-      tbody.querySelectorAll("select.urgSel").forEach(sel => {
-        sel.addEventListener("change", (e) => {
-          const id = e.target.dataset.id;
-          const value = e.target.value;
+      // Row selection (ignore clicks on urgency select)
+      tbody.querySelectorAll("tr").forEach(tr => {
+        tr.addEventListener("click", (e) => {
+          if (e.target && (e.target.tagName === "SELECT" || e.target.closest("select"))) return;
 
-          post({
-            type: "SET_URGENCY",
-            id,
-            value,
-            payload: { ...state }
-          });
+          tbody.querySelectorAll("tr.selected").forEach(x => x.classList.remove("selected"));
+          tr.classList.add("selected");
+
+          selection.id = tr.dataset.id || "";
+          selection.orderNumber = tr.dataset.order || "";
+          selection.customerName = tr.dataset.customer || "";
+          selection.handlingSite = tr.dataset.handling || "";
+          updateSelectionUI();
         });
       });
 
-      // Transfer click
-      tbody.querySelectorAll("button.xferBtn").forEach(btn => {
-        btn.addEventListener("click", () => {
-          const id = btn.dataset.id;
-          const toSite = btn.dataset.to;
-
-          const note = window.prompt(`Transfer this order to ${toSite}?\n\nOptional note:`, "");
-          if (note === null) return;
-
-          post({
-            type: "TRANSFER_ORDER",
-            id,
-            toSite,
-            note: note || "",
-            payload: { ...state }
-          });
+      // Urgency change (stop row click)
+      tbody.querySelectorAll("select.urgSel").forEach(sel => {
+        sel.addEventListener("click", (e) => e.stopPropagation());
+        sel.addEventListener("change", (e) => {
+          post({ type: "SET_URGENCY", id: e.target.dataset.id, value: e.target.value, payload: { ...state } });
         });
       });
     }
@@ -434,14 +611,12 @@
     // -------- Receive messages from Wix page code --------
     window.addEventListener("message", (event) => {
       const msg = event.data || {};
-
       if (msg.type === "ORDERS_RESULT") {
         setLoading(false);
         const items = msg.items || [];
         renderRows(items);
         meta.textContent = `${items.length} orders`;
       }
-
       if (msg.type === "ERROR") {
         setLoading(false);
         alert(msg.message || "Unknown error");
@@ -449,6 +624,7 @@
     });
 
     // Initial load
+    updateSelectionUI();
     requestOrders();
   </script>
 </body>
