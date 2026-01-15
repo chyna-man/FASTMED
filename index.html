@@ -1,12 +1,12 @@
-<!-- dashboard.html
+<!doctype html>
+<!-- index.html
      Host this file on GitHub Pages (HTTPS).
      Works with Wix postMessage bridge:
        - Sends: { type:"GET_ORDERS", payload:{tab,q,limit,offset} }
        - Receives: { type:"ORDERS_RESULT", items: [...] } or { type:"ERROR", message:"..." }
        - Sends updates: { type:"SET_URGENCY", id, value, payload:{...state} }
-       - (Optional for later) Sends transfers: { type:"TRANSFER_ORDER", id, toSite, reason, note, payload:{...state} }
+       - Sends transfers: { type:"TRANSFER_ORDER", id, toSite, note, payload:{...state} }
 -->
-<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -53,7 +53,7 @@
       padding:10px 14px;
       border-radius:999px;
       cursor:pointer;
-      font-weight:700;
+      font-weight:800;
       color:#111;
       user-select:none;
     }
@@ -88,7 +88,7 @@
       padding:10px 12px;
       border-radius:10px;
       cursor:pointer;
-      font-weight:700;
+      font-weight:800;
       display:inline-flex;
       align-items:center;
       gap:8px;
@@ -99,9 +99,10 @@
     .tableWrap{
       border:1px solid var(--line);
       border-radius:14px;
-      overflow:hidden;
+      overflow:auto;           /* allow horizontal scroll */
     }
     table{
+      min-width: 1700px;       /* ensures all columns exist */
       width:100%;
       border-collapse:separate;
       border-spacing:0;
@@ -113,7 +114,7 @@
       background:var(--header);
       color:var(--headerText);
       text-align:left;
-      font-weight:800;
+      font-weight:900;
       font-size:13px;
       padding:12px 12px;
       border-bottom:1px solid #000;
@@ -139,7 +140,7 @@
       padding:6px 10px;
       border-radius:999px;
       background:var(--chipBg);
-      font-weight:800;
+      font-weight:900;
       font-size:12px;
     }
     .badge{
@@ -147,7 +148,7 @@
       align-items:center;
       padding:6px 10px;
       border-radius:999px;
-      font-weight:800;
+      font-weight:900;
       font-size:12px;
       border:1px solid var(--line);
       background:#fff;
@@ -163,7 +164,7 @@
       padding:8px 10px;
       border-radius:10px;
       background:#fff;
-      font-weight:800;
+      font-weight:900;
       cursor:pointer;
     }
     .urgSel:focus{
@@ -171,6 +172,19 @@
       border-color:var(--focus);
       box-shadow:0 0 0 3px rgba(37,99,235,.15);
     }
+
+    /* Transfer button */
+    .xferBtn{
+      border:1px solid var(--line);
+      background:#fff;
+      padding:8px 10px;
+      border-radius:10px;
+      cursor:pointer;
+      font-weight:900;
+      width: 140px;
+      text-align:center;
+    }
+    .xferBtn:hover{ border-color:#cbd5e1; }
 
     /* Footer/paging */
     .footer{
@@ -186,23 +200,23 @@
     .loading{ opacity:.65; pointer-events:none; }
     .muted{ color:var(--muted); }
 
-    /* Column widths (adjust as you like) */
+    /* Column widths */
     colgroup col.cUrg{ width:150px; }
     colgroup col.cOrder{ width:150px; }
-    colgroup col.cCust{ width:160px; }
+    colgroup col.cCust{ width:180px; }
     colgroup col.cPre{ width:140px; }
     colgroup col.cPhone{ width:140px; }
     colgroup col.cPay{ width:120px; }
-    colgroup col.cCreated{ width:160px; }
+    colgroup col.cCreated{ width:170px; }
     colgroup col.cTotal{ width:110px; }
-    colgroup col.cRecv{ width:140px; }
-    colgroup col.cStatus{ width:150px; }
+    colgroup col.cRecv{ width:150px; }
+    colgroup col.cStatus{ width:160px; }
     colgroup col.cPickup{ width:150px; }
+    colgroup col.cHandle{ width:110px; }
+    colgroup col.cXfer{ width:160px; }
 
-    /* Small screens */
     @media (max-width: 900px){
       .wrap{ padding:14px; }
-      colgroup col.cCreated{ width:140px; }
     }
   </style>
 </head>
@@ -226,7 +240,7 @@
       <table>
         <colgroup>
           <col class="cUrg"><col class="cOrder"><col class="cCust"><col class="cPre"><col class="cPhone">
-          <col class="cPay"><col class="cCreated"><col class="cTotal"><col class="cRecv"><col class="cStatus"><col class="cPickup">
+          <col class="cPay"><col class="cCreated"><col class="cTotal"><col class="cRecv"><col class="cStatus"><col class="cPickup"><col class="cHandle"><col class="cXfer">
         </colgroup>
         <thead>
           <tr>
@@ -241,6 +255,8 @@
             <th>Receive Method</th>
             <th>Order Status</th>
             <th>Pick Up Location</th>
+            <th>Handling</th>
+            <th>Transfer</th>
           </tr>
         </thead>
         <tbody id="tbody"></tbody>
@@ -249,7 +265,7 @@
 
     <div class="footer">
       <div id="meta">0 orders</div>
-      <div class="muted" id="hint">Tip: change urgency directly in the dropdown.</div>
+      <div class="muted" id="hint">Tip: use the urgency dropdown; transfer moves handling between TST/Central.</div>
     </div>
   </div>
 
@@ -272,7 +288,6 @@
     }
 
     function post(msg){
-      // Wix HTML iframe listens via onMessage/postMessage bridge
       window.parent.postMessage(msg, "*");
     }
 
@@ -282,8 +297,6 @@
     }
 
     // -------- UI handlers --------
-
-    // Tabs
     document.querySelectorAll(".tab").forEach(el => {
       el.addEventListener("click", () => {
         document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
@@ -353,9 +366,17 @@
       `;
     }
 
+    function transferBtn(order){
+      const cur = String(order.handlingSite || "TST").toUpperCase();
+      const toSite = (cur === "CENTRAL") ? "TST" : "CENTRAL";
+      const label = (cur === "CENTRAL") ? "→ TST" : "→ Central";
+      return `<button class="xferBtn" data-id="${escapeHtml(order._id)}" data-to="${escapeHtml(toSite)}">${label}</button>`;
+    }
+
     // -------- Render --------
     function renderRows(items){
       tbody.innerHTML = (items || []).map(o => {
+        const handling = String(o.handlingSite || "");
         return `
           <tr>
             <td>${urgencySelect(o)}</td>
@@ -369,11 +390,13 @@
             <td>${escapeHtml(o.fulfillmentType || "")}</td>
             <td>${escapeHtml(o.orderStatusFinal || "")}</td>
             <td>${escapeHtml(o.pickupLocation || "")}</td>
+            <td>${chip(handling)}</td>
+            <td>${transferBtn(o)}</td>
           </tr>
         `;
       }).join("");
 
-      // Attach urgency listeners after render
+      // Urgency change
       tbody.querySelectorAll("select.urgSel").forEach(sel => {
         sel.addEventListener("change", (e) => {
           const id = e.target.dataset.id;
@@ -383,7 +406,26 @@
             type: "SET_URGENCY",
             id,
             value,
-            payload: { ...state } // keep same view
+            payload: { ...state }
+          });
+        });
+      });
+
+      // Transfer click
+      tbody.querySelectorAll("button.xferBtn").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const id = btn.dataset.id;
+          const toSite = btn.dataset.to;
+
+          const note = window.prompt(`Transfer this order to ${toSite}?\n\nOptional note:`, "");
+          if (note === null) return;
+
+          post({
+            type: "TRANSFER_ORDER",
+            id,
+            toSite,
+            note: note || "",
+            payload: { ...state }
           });
         });
       });
