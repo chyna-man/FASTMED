@@ -1,248 +1,343 @@
-/* Fast Med Orders Dashboard - app.js
-   Wix postMessage bridge contract:
-     OUT -> { type:"GET_ORDERS", payload:{tab,q,limit,offset} }
-     OUT -> { type:"SET_URGENCY", id, value, payload:{...} }
-     OUT -> { type:"TRANSFER_ORDER", id, toSite, note, payload:{...} }
+// Fast Med Orders Dashboard - app.js
+// Runs inside the iframe (GitHub Pages or embedded site).
+// Talks to Wix via postMessage.
 
-     IN  <- { type:"ORDERS_RESULT", items:[...] }
-     IN  <- { type:"ERROR", message:"..." }
-*/
+const pageSize = 50;
+const nearBottomPx = 220;
 
-(() => {
-  // -------- State --------
-  const state = { tab: "TST", q: "", limit: 50, offset: 0 };
-  const selection = { id: "", orderNumber: "", customerName: "", handlingSite: "" };
-  let lastAction = ""; // "TRANSFER" | "URGENCY" | ""
+let cursor = 0;
+let loading = false;
+let hasMore = true;
 
-  // -------- Elements --------
-  const tbody = document.getElementById("tbody");
-  const tableWrap = document.getElementById("tableWrap");
-  const meta = document.getElementById("meta");
-  const search = document.getElementById("search");
-  const refreshBtn = document.getElementById("refresh");
+let activeTab = "TST";     // "TST" | "CENTRAL" | "ADMIN"
+let searchTerm = "";
 
-  const selInfo = document.getElementById("selInfo");
-  const btnTransfer = document.getElementById("btnTransfer");
+let requestKey = "";
+let selected = null; // { id, orderNumber, handlingSite }
 
-  const modalOverlay = document.getElementById("modalOverlay");
-  const modalClose = document.getElementById("modalClose");
-  const modalCancel = document.getElementById("modalCancel");
-  const modalConfirm = document.getElementById("modalConfirm");
-  const modalOrderInfo = document.getElementById("modalOrderInfo");
-  const toSiteSelect = document.getElementById("toSiteSelect");
-  const transferNote = document.getElementById("transferNote");
+const els = {
+  tableWrap: document.getElementById("tableWrap"),
+  tbody: document.getElementById("tbody"),
+  meta: document.getElementById("meta"),
 
-  const toastHost = document.getElementById("toastHost");
+  tabs: Array.from(document.querySelectorAll(".tab")),
+  search: document.getElementById("search"),
+  refresh: document.getElementById("refresh"),
 
-  // -------- Helpers --------
-  function setLoading(on){ tableWrap.classList.toggle("loading", !!on); }
-  function post(msg){ window.parent.postMessage(msg, "*"); }
+  selInfo: document.getElementById("selInfo"),
+  btnTransfer: document.getElementById("btnTransfer"),
 
-  function showToast(text, kind="ok", ms=1800){
-    if(!toastHost) return;
-    const el = document.createElement("div");
-    el.className = `toast ${kind}`;
-    el.textContent = text;
-    toastHost.appendChild(el);
-    requestAnimationFrame(()=> el.classList.add("show"));
-    setTimeout(()=>{
-      el.classList.remove("show");
-      setTimeout(()=> el.remove(), 220);
-    }, ms);
+  modalOverlay: document.getElementById("modalOverlay"),
+  modalClose: document.getElementById("modalClose"),
+  modalOrderInfo: document.getElementById("modalOrderInfo"),
+  toSiteSelect: document.getElementById("toSiteSelect"),
+  transferNote: document.getElementById("transferNote"),
+  modalCancel: document.getElementById("modalCancel"),
+  modalConfirm: document.getElementById("modalConfirm"),
+
+  toastHost: document.getElementById("toastHost"),
+};
+
+function escapeHtml(s) {
+  return String(s ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function digitsOnly(s) {
+  return String(s || "").replace(/\D/g, "");
+}
+
+function fmtDate(v) {
+  if (!v) return "";
+  try {
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? String(v) : d.toLocaleString();
+  } catch {
+    return String(v);
   }
+}
 
-  function requestOrders(){
-    setLoading(true);
-    post({ type:"GET_ORDERS", payload: { ...state } });
-  }
+function toast(msg, type = "ok") {
+  if (!els.toastHost) return;
+  const div = document.createElement("div");
+  div.className = `toast ${type}`;
+  div.textContent = msg;
+  els.toastHost.appendChild(div);
+  setTimeout(() => div.classList.add("show"), 10);
+  setTimeout(() => {
+    div.classList.remove("show");
+    setTimeout(() => div.remove(), 250);
+  }, 2400);
+}
 
-  function clearSelection(){
-    selection.id = ""; selection.orderNumber = ""; selection.customerName = ""; selection.handlingSite = "";
-    updateSelectionUI();
-    tbody.querySelectorAll("tr.selected").forEach(tr => tr.classList.remove("selected"));
-  }
+function setMeta(text) {
+  if (els.meta) els.meta.textContent = text;
+}
 
-  function updateSelectionUI(){
-    if(!selection.id){
-      selInfo.textContent = "No order selected";
-      btnTransfer.disabled = true;
-      return;
-    }
-    selInfo.textContent =
-      `Selected: #${selection.orderNumber || selection.id}${selection.customerName ? " · " + selection.customerName : ""}`;
-    btnTransfer.disabled = false;
-  }
+function clearTable() {
+  els.tbody.innerHTML = "";
+  cursor = 0;
+  hasMore = true;
+  loading = false;
+  selected = null;
+  els.selInfo.textContent = "No order selected";
+  els.btnTransfer.disabled = true;
+}
 
-  function openModal(){
-    if(!selection.id) return;
+function buildRequestKey() {
+  return `${activeTab}__${searchTerm}__${cursor}__${pageSize}__${Date.now()}`;
+}
 
-    modalOrderInfo.textContent =
-      `#${selection.orderNumber || selection.id}${selection.customerName ? " · " + selection.customerName : ""}`;
+function requestMore() {
+  if (loading || !hasMore) return;
 
-    const cur = String(selection.handlingSite || "").toUpperCase();
-    const tab = String(state.tab || "").toUpperCase();
-    let suggested = "CENTRAL";
-    if(cur === "TST") suggested = "CENTRAL";
-    else if(cur === "CENTRAL") suggested = "TST";
-    else if(tab === "TST") suggested = "CENTRAL";
-    else if(tab === "CENTRAL") suggested = "TST";
+  loading = true;
+  setMeta("Loading…");
 
-    toSiteSelect.value = suggested;
-    transferNote.value = "";
-    modalOverlay.classList.add("open");
-    transferNote.focus();
-  }
+  requestKey = buildRequestKey();
 
-  function closeModal(){ modalOverlay.classList.remove("open"); }
+  parent.postMessage(
+    {
+      type: "GET_ORDERS",
+      payload: { cursor, pageSize, tab: activeTab, search: searchTerm },
+      requestKey,
+    },
+    "*"
+  );
+}
 
-  function escapeHtml(s){
-    return String(s ?? "").replace(/[&<>"']/g, m => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]));
-  }
-  function fmtDate(d){ try{ return d ? new Date(d).toLocaleString() : ""; }catch(_){ return String(d||""); } }
-  function fmtTotal(x){ const n = Number(x); return Number.isFinite(n) ? n.toFixed(2) : (x ?? ""); }
-  function chip(text){ return `<span class="chip">${escapeHtml(text || "")}</span>`; }
-  function paymentBadge(paymentStatus){
-    const s = String(paymentStatus || "").toUpperCase();
-    if (s === "PAID") return `<span class="badge green">PAID</span>`;
-    if (s === "UNPAID") return `<span class="badge red">UNPAID</span>`;
-    if (s.includes("REFUND")) return `<span class="badge gray">${escapeHtml(s)}</span>`;
-    return `<span class="badge gray">${escapeHtml(s || "-")}</span>`;
-  }
-  function urgencySelect(order){
-    const current = String(order.urgencyFinal || "NORMAL").toUpperCase();
-    const id = order._id;
-    return `
-      <select class="urgSel" data-id="${escapeHtml(id)}" aria-label="Urgency">
-        <option value="ASAP" ${current==="ASAP" ? "selected":""}>ASAP</option>
-        <option value="TODAY" ${current==="TODAY" ? "selected":""}>TODAY</option>
-        <option value="NORMAL" ${current==="NORMAL" ? "selected":""}>NORMAL</option>
-      </select>
-    `;
-  }
+function urgencySelectHtml(current) {
+  const val = String(current || "").toUpperCase();
+  const opts = ["", "LOW", "NORMAL", "HIGH", "URGENT"];
+  return `
+    <select class="urgSel" data-role="urgency">
+      ${opts
+        .map(o => `<option value="${o}" ${o === val ? "selected" : ""}>${o || "AUTO"}</option>`)
+        .join("")}
+    </select>
+  `;
+}
 
-  function renderRows(items){
-    tbody.innerHTML = (items || []).map(o => {
-      const handling = String(o.handlingSite || "");
-      const customer = o.customerName || "";
-      return `
-        <tr data-id="${escapeHtml(o._id)}"
-            data-order="${escapeHtml(o.orderNumber || "")}"
-            data-customer="${escapeHtml(customer)}"
-            data-handling="${escapeHtml(handling)}">
-          <td>${urgencySelect(o)}</td>
-          <td title="${escapeHtml(o.orderNumber)}">${chip(o.orderNumber)}</td>
-          <td title="${escapeHtml(customer)}">${escapeHtml(customer)}</td>
-          <td>${escapeHtml(o.preConsultStatus || "")}</td>
-          <td>${escapeHtml(o.phoneDigits || o.phoneNorm || "")}</td>
-          <td>${paymentBadge(o.paymentStatus)}</td>
-          <td>${escapeHtml(fmtDate(o.createdAt))}</td>
-          <td>${escapeHtml(fmtTotal(o.total))}</td>
-          <td>${escapeHtml(o.fulfillmentType || "")}</td>
-          <td>${escapeHtml(o.orderStatusFinal || "")}</td>
-          <td>${escapeHtml(o.pickupLocation || "")}</td>
-        </tr>
-      `;
-    }).join("");
+function preConsultHtml(flag) {
+  if (flag === true) return `<span class="badge">Matched</span>`;
+  return `<span class="badge red">Not yet</span>`;
+}
 
-    // Row selection (ignore clicks on urgency select)
-    tbody.querySelectorAll("tr").forEach(tr => {
-      tr.addEventListener("click", (e) => {
-        if (e.target && (e.target.tagName === "SELECT" || e.target.closest("select"))) return;
+function renderRow(o) {
+  const tr = document.createElement("tr");
 
-        tbody.querySelectorAll("tr.selected").forEach(x => x.classList.remove("selected"));
-        tr.classList.add("selected");
+  // IMPORTANT: we use _id for update/transfer
+  tr.dataset.id = o._id;
+  tr.dataset.orderNumber = o.orderNumber || "";
+  tr.dataset.handlingSite = o.handlingSite || "";
 
-        selection.id = tr.dataset.id || "";
-        selection.orderNumber = tr.dataset.order || "";
-        selection.customerName = tr.dataset.customer || "";
-        selection.handlingSite = tr.dataset.handling || "";
-        updateSelectionUI();
-      });
-    });
+  const urgency = o.urgencyFinal || o.urgencyOverride || o.urgencyAuto || "";
+  const orderStatus = o.fulfillmentStatusFinal || o.fulfillmentStatus || o.status || "";
+  const recv = o.fulfillmentType || "";
+  const pickup = o.pickupLocation || "";
 
-    // Urgency change
-    tbody.querySelectorAll("select.urgSel").forEach(sel => {
-      sel.addEventListener("click", (e) => e.stopPropagation());
-      sel.addEventListener("change", (e) => {
-        lastAction = "URGENCY";
-        post({ type: "SET_URGENCY", id: e.target.dataset.id, value: e.target.value, payload: { ...state } });
-      });
-    });
-  }
+  tr.innerHTML = `
+    <td>${urgencySelectHtml(urgency)}</td>
+    <td class="mono">${escapeHtml(o.orderNumber || "")}</td>
+    <td>${escapeHtml(o.customerName || "")}</td>
+    <td>${preConsultHtml(!!o.preConsultMatched)}</td>
+    <td class="mono">${escapeHtml(o.phoneNorm || o.phone || o.phoneDigits || "")}</td>
+    <td>${escapeHtml(o.paymentStatus || "")}</td>
+    <td class="mono">${escapeHtml(fmtDate(o.createdAt))}</td>
+    <td class="mono">${escapeHtml(o.total ?? "")}</td>
+    <td>${escapeHtml(recv)}</td>
+    <td>${escapeHtml(orderStatus)}</td>
+    <td>${escapeHtml(pickup)}</td>
+  `;
 
-  // -------- Events --------
-  document.querySelectorAll(".tab").forEach(el => {
-    el.addEventListener("click", () => {
-      document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
-      el.classList.add("active");
-      state.tab = el.dataset.tab;
-      state.offset = 0;
-      clearSelection();
-      requestOrders();
-    });
+  // Row click selects
+  tr.addEventListener("click", (e) => {
+    // ignore click on dropdown (still allow selection after)
+    selectRow(tr);
   });
 
-  let timer = null;
-  search.addEventListener("input", (e) => {
-    clearTimeout(timer);
-    timer = setTimeout(() => {
-      state.q = e.target.value || "";
-      state.offset = 0;
-      clearSelection();
-      requestOrders();
-    }, 250);
+  // Urgency change
+  tr.querySelector('[data-role="urgency"]').addEventListener("change", (e) => {
+    const newVal = e.target.value; // "" means AUTO
+    const id = tr.dataset.id;
+
+    parent.postMessage(
+      {
+        type: "SET_URGENCY",
+        id,
+        value: newVal,
+        requestKey
+      },
+      "*"
+    );
   });
 
-  refreshBtn.addEventListener("click", () => {
-    clearSelection();
-    requestOrders();
+  return tr;
+}
+
+function selectRow(tr) {
+  // clear previous
+  Array.from(els.tbody.querySelectorAll("tr.selected")).forEach(r => r.classList.remove("selected"));
+  tr.classList.add("selected");
+
+  selected = {
+    id: tr.dataset.id,
+    orderNumber: tr.dataset.orderNumber,
+    handlingSite: tr.dataset.handlingSite
+  };
+
+  els.selInfo.textContent = `Selected: ${selected.orderNumber || selected.id}`;
+  els.btnTransfer.disabled = false;
+}
+
+function appendRows(items) {
+  const frag = document.createDocumentFragment();
+  for (const o of items) frag.appendChild(renderRow(o));
+  els.tbody.appendChild(frag);
+}
+
+function removeRowById(id) {
+  const tr = els.tbody.querySelector(`tr[data-id="${CSS.escape(id)}"]`);
+  if (tr) tr.remove();
+}
+
+function updateRow(item) {
+  const tr = els.tbody.querySelector(`tr[data-id="${CSS.escape(item._id)}"]`);
+  if (!tr) return;
+
+  // If tab-filtered and item moved to another site, remove it from view
+  const newSite = item.handlingSite || "";
+  if (activeTab === "TST" && newSite !== "TST") {
+    removeRowById(item._id);
+    toast(`Moved order to ${newSite}`, "ok");
+    return;
+  }
+  if (activeTab === "CENTRAL" && newSite !== "Central") {
+    removeRowById(item._id);
+    toast(`Moved order to ${newSite}`, "ok");
+    return;
+  }
+
+  // simplest: replace the row HTML by re-rendering
+  const newTr = renderRow(item);
+  newTr.classList.toggle("selected", tr.classList.contains("selected"));
+  tr.replaceWith(newTr);
+}
+
+window.addEventListener("message", (event) => {
+  const msg = event.data;
+
+  if (msg?.type === "ORDERS_RESULT") {
+    // ignore stale responses
+    if (msg.requestKey && msg.requestKey !== requestKey) return;
+
+    const items = msg.items || [];
+    appendRows(items);
+
+    cursor = msg.nextCursor ?? cursor;
+    hasMore = !!msg.hasMore;
+    loading = false;
+
+    setMeta(`${els.tbody.querySelectorAll("tr").length} orders${hasMore ? "" : " (end)"}`);
+  }
+
+  if (msg?.type === "ORDER_UPDATED") {
+    if (msg.requestKey && msg.requestKey !== requestKey) return;
+    if (msg.item?._id) updateRow(msg.item);
+  }
+
+  if (msg?.type === "ERROR") {
+    loading = false;
+    toast(msg.message || "Error", "err");
+    setMeta("Error");
+    console.error(msg);
+  }
+});
+
+// Infinite scroll
+els.tableWrap.addEventListener("scroll", () => {
+  const el = els.tableWrap;
+  const nearBottom =
+    el.scrollTop + el.clientHeight >= el.scrollHeight - nearBottomPx;
+  if (nearBottom) requestMore();
+});
+
+// Tabs
+els.tabs.forEach((t) => {
+  t.addEventListener("click", () => {
+    els.tabs.forEach(x => x.classList.remove("active"));
+    t.classList.add("active");
+
+    activeTab = t.dataset.tab; // "TST" / "CENTRAL" / "ADMIN"
+    clearTable();
+    requestMore();
   });
+});
 
-  btnTransfer.addEventListener("click", openModal);
-  modalClose.addEventListener("click", closeModal);
-  modalCancel.addEventListener("click", closeModal);
-  modalOverlay.addEventListener("click", (e) => { if(e.target === modalOverlay) closeModal(); });
-  window.addEventListener("keydown", (e) => { if(e.key === "Escape") closeModal(); });
+// Search (debounced)
+let searchTimer = null;
+els.search.addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    searchTerm = (els.search.value || "").trim();
+    clearTable();
+    requestMore();
+  }, 250);
+});
 
-  modalConfirm.addEventListener("click", () => {
-    if(!selection.id) return;
-    const toSite = String(toSiteSelect.value || "").toUpperCase();
-    const note = String(transferNote.value || "").trim();
+// Refresh
+els.refresh.addEventListener("click", () => {
+  clearTable();
+  requestMore();
+});
 
-    lastAction = "TRANSFER";
-    showToast("Transferring…", "info", 1200);
+// Transfer modal controls
+function openModal() {
+  if (!selected) return;
 
-    post({ type: "TRANSFER_ORDER", id: selection.id, toSite, note, payload: { ...state } });
+  els.modalOverlay.classList.add("show");
+  els.modalOrderInfo.textContent = `Order: ${selected.orderNumber || selected.id}`;
 
-    closeModal();
-    clearSelection();
-  });
+  // default target to opposite site
+  const current = selected.handlingSite;
+  const def = current === "Central" ? "TST" : "Central";
+  els.toSiteSelect.value = def;
 
-  // -------- Receive messages from Wix --------
-  window.addEventListener("message", (event) => {
-    const msg = event.data || {};
-    if (msg.type === "ORDERS_RESULT") {
-      setLoading(false);
-      const items = msg.items || [];
-      renderRows(items);
-      meta.textContent = `${items.length} orders`;
+  els.transferNote.value = "";
+}
 
-      if (lastAction === "TRANSFER") {
-        showToast("Transfer completed ✅", "ok", 1800);
-        lastAction = "";
-      } else if (lastAction === "URGENCY") {
-        showToast("Urgency updated ✅", "ok", 1400);
-        lastAction = "";
-      }
-    }
-    if (msg.type === "ERROR") {
-      setLoading(false);
-      showToast(msg.message || "Error", "err", 2600);
-      lastAction = "";
-    }
-  });
+function closeModal() {
+  els.modalOverlay.classList.remove("show");
+}
 
-  // Initial load
-  updateSelectionUI();
-  requestOrders();
-})();
+els.btnTransfer.addEventListener("click", openModal);
+els.modalClose.addEventListener("click", closeModal);
+els.modalCancel.addEventListener("click", closeModal);
+els.modalOverlay.addEventListener("click", (e) => {
+  if (e.target === els.modalOverlay) closeModal();
+});
+
+els.modalConfirm.addEventListener("click", () => {
+  if (!selected) return;
+
+  parent.postMessage(
+    {
+      type: "TRANSFER_ORDER",
+      id: selected.id,
+      toSite: els.toSiteSelect.value,
+      note: els.transferNote.value || "",
+      requestKey
+    },
+    "*"
+  );
+
+  closeModal();
+});
+
+// initial load
+setMeta("Loading…");
+requestMore();
